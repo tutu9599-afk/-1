@@ -1,0 +1,83 @@
+name: "rib_geometry_optimization"
+description: "Parametric study of rib channel geometry effects on battery cooling performance"
+
+air:
+  Tin: 298.15          # Inlet temperature [K] (25°C)
+  Pin: 101325          # Inlet pressure [Pa] (1 atm)
+  mdot: 0.05           # Total mass flow rate [kg/s]
+  # Properties calculated automatically from T and P if not provided
+  # mu: 1.85e-5        # Dynamic viscosity [Pa·s]
+  # rho: 1.184         # Density [kg/m³]
+  # cp: 1007           # Specific heat [J/(kg·K)]
+  # k: 0.0263          # Thermal conductivity [W/(m·K)]
+
+cells:
+  n_rows: 4
+  n_cols: 8
+  q_gen: 15.0          # Heat generation per cell [W]
+  size:
+    lx: 0.065          # Cell length [m] (65mm)
+    ly: 0.100          # Cell width [m] (100mm)
+    lz: 0.018          # Cell height [m] (18mm)
+  gap_to_channel: 0.002  # Gap between cell and channel [m] (2mm)
+  k_cell: 20.0         # Cell thermal conductivity [W/(m·K)]
+  k_gap: 0.2           # Gap/pad thermal conductivity [W/(m·K)]
+
+channel:
+  length: 0.520        # Channel length [m] (520mm)
+  width: 0.100         # Channel width [m] (100mm)
+  height: 0.010        # Channel height [m] (10mm)
+  n_parallel: 4        # Number of parallel channels
+  manifold_loss_coeff: 1.5  # Manifold pressure loss coefficient
+
+ribs:
+  type: "rect"         # Rib type: rect, tri, semi, dimple
+  pitch: 0.020         # Rib pitch (spacing) [m] (20mm)
+  height: 0.003        # Rib height [m] (3mm)
+  thickness: 0.002     # Rib thickness [m] (2mm)
+  staggered: false     # Staggered arrangement
+
+solver:
+  mode: "ROM"          # Simulation mode: ROM or CFD
+  turb_model: "kOmegaSST"  # Turbulence model (CFD only)
+  steady: true
+  max_iter: 1000
+  convergence_tol: 1.0e-6
+
+# Parameter sweep configuration
+sweep:
+  - path: "ribs.height"
+    values: [0.001, 0.002, 0.003, 0.004, 0.005, 0.006, 0.007, 0.008]
+  
+  # Uncomment for multi-parameter sweep
+  # - path: "ribs.pitch"
+  #   values: [0.010, 0.015, 0.020, 0.025, 0.030]
+  
+  # - path: "air.mdot"
+  #   values: [0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08]
+
+metrics:
+  targets:
+    - "Tmax"
+    - "dT_pack"
+    - "DeltaP"
+    - "Ppump"
+    - "UniformityIndex"
+    - "JF"
+  T_limit: 313.15      # Temperature limit [K] (40°C)
+  eta_fan: 0.6         # Fan efficiency
+  weights:
+    Tmax: 3.0          # Weight for max temperature penalty
+    dT_pack: 1.0       # Weight for temperature spread
+    Ppump: 1.0         # Weight for pumping power
+
+optimization:
+  enabled: false       # Enable Optuna optimization
+  n_trials: 100
+  sampler: "TPE"
+  bounds:
+    ribs.height: [0.001, 0.01]
+    ribs.pitch: [0.005, 0.05]
+    air.mdot: [0.01, 0.1]
+
+output_dir: "results"

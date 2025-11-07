@@ -1,0 +1,55 @@
+name: "rib_type_comparison"
+description: "Compare different rib cross-section geometries"
+
+air:
+  Tin: 298.15
+  Pin: 101325
+  mdot: 0.05
+
+cells:
+  n_rows: 4
+  n_cols: 8
+  q_gen: 15.0
+  size:
+    lx: 0.065
+    ly: 0.100
+    lz: 0.018
+  gap_to_channel: 0.002
+  k_cell: 20.0
+  k_gap: 0.2
+
+channel:
+  length: 0.520
+  width: 0.100
+  height: 0.010
+  n_parallel: 4
+  manifold_loss_coeff: 1.5
+
+ribs:
+  type: "rect"
+  pitch: 0.020
+  height: 0.004
+  thickness: 0.002
+  staggered: false
+
+solver:
+  mode: "ROM"
+  steady: true
+  max_iter: 1000
+  convergence_tol: 1.0e-6
+
+# Compare rib types
+sweep:
+  - path: "ribs.type"
+    values: ["rect", "tri", "semi", "dimple"]
+
+metrics:
+  targets: ["Tmax", "dT_pack", "DeltaP", "Ppump", "UniformityIndex", "JF"]
+  T_limit: 313.15
+  eta_fan: 0.6
+  weights:
+    Tmax: 3.0
+    dT_pack: 1.0
+    Ppump: 1.0
+
+output_dir: "results_rib_types"
