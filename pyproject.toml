@@ -79,4 +79,4 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v --cov=battery_aircooling --cov-report=term-missing"
+addopts = "-v"
