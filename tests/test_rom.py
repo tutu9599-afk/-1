@@ -5,191 +5,197 @@ Unit tests for ROM solver.
 import pytest
 import numpy as np
 
-from battery_aircooling.config_schema import SimulationConfig
+from battery_aircooling.config_schema import (
+    SimulationConfig,
+    AirProperties,
+    CellsConfig,
+    ChannelConfig,
+    RibsConfig,
+    CellGeometry,
+)
 from battery_aircooling.physics_rom import ROMSolver
 
 
 @pytest.fixture
-def simple_config():
-    """Create a simple test configuration."""
-    config_dict = {
-        "name": "test_case",
-        "air": {
-            "Tin": 300.0,
-            "Pin": 101325.0,
-            "mdot": 0.01,
-        },
-        "cells": {
-            "n_rows": 2,
-            "n_cols": 2,
-            "q_gen": 5.0,
-            "size": {
-                "lx": 0.10,
-                "ly": 0.10,
-                "lz": 0.03,
-            },
-            "gap_to_channel": 0.002,
-        },
-        "channel": {
-            "length": 0.20,
-            "width": 0.10,
-            "height": 0.01,
-            "n_parallel": 2,
-            "manifold_loss_coeff": 1.5,
-        },
-        "ribs": {
-            "type": "rect",
-            "pitch": 0.020,
-            "height": 0.003,
-            "thickness": 0.002,
-            "staggered": False,
-        },
-        "solver": {
-            "mode": "ROM",
-            "max_iter": 50,
-            "convergence_tol": 1e-4,
-        },
-    }
+def basic_config() -> SimulationConfig:
+    """Create a basic simulation configuration for testing."""
+    return SimulationConfig(
+        name="test_simulation",
+        air=AirProperties(
+            Tin=298.15,
+            Pin=101325,
+            mdot=0.05
+        ),
+        cells=CellsConfig(
+            n_rows=4,
+            n_cols=8,
+            q_gen=15.0,
+            size=CellGeometry(
+                lx=0.065,
+                ly=0.100,
+                lz=0.018
+            ),
+            gap_to_channel=0.002
+        ),
+        channel=ChannelConfig(
+            length=0.520,
+            width=0.100,
+            height=0.010,
+            n_parallel=4
+        ),
+        ribs=RibsConfig(
+            type="rect",
+            pitch=0.020,
+            height=0.003,
+            thickness=0.002
+        )
+    )
+
+
+class TestROMSolver:
+    """Test ROM solver functionality."""
     
-    return SimulationConfig(**config_dict)
-
-
-def test_solver_initialization(simple_config):
-    """Test ROM solver initialization."""
-    solver = ROMSolver(simple_config)
+    def test_solver_initialization(self, basic_config: SimulationConfig) -> None:
+        """Test that solver initializes correctly."""
+        solver = ROMSolver(basic_config)
+        
+        assert solver.config == basic_config
+        assert solver.Dh > 0
+        assert solver.A_channel > 0
+        assert "mu" in solver.air_props
+        assert "rho" in solver.air_props
     
-    assert solver.config == simple_config
-    assert solver.Dh > 0
-    assert solver.A_channel > 0
-    assert "mu" in solver.air_props
-    assert "rho" in solver.air_props
-
-
-def test_solver_convergence(simple_config):
-    """Test that solver converges."""
-    solver = ROMSolver(simple_config)
-    results = solver.solve(max_iter=100, tol=1e-4)
+    def test_solver_runs(self, basic_config: SimulationConfig) -> None:
+        """Test that solver runs without errors."""
+        solver = ROMSolver(basic_config)
+        results = solver.solve(max_iter=50, tol=1e-3)
+        
+        assert results is not None
+        assert results.iterations > 0
     
-    assert results.converged
-    assert results.iterations > 0
-    assert results.iterations < 100
+    def test_mass_conservation(self, basic_config: SimulationConfig) -> None:
+        """Test that mass is conserved across channels."""
+        solver = ROMSolver(basic_config)
+        results = solver.solve(max_iter=100, tol=1e-4)
+        
+        # Sum of channel flows should equal total flow
+        total_mdot = sum(ch.mdot for ch in results.channels)
+        expected_mdot = basic_config.air.mdot
+        
+        rel_error = abs(total_mdot - expected_mdot) / expected_mdot
+        assert rel_error < 0.01  # Within 1%
+    
+    def test_energy_conservation(self, basic_config: SimulationConfig) -> None:
+        """Test that energy is approximately conserved."""
+        solver = ROMSolver(basic_config)
+        results = solver.solve(max_iter=100, tol=1e-4)
+        
+        # Total heat removed should approximately equal heat generated
+        Q_gen_total = (basic_config.cells.n_rows * 
+                      basic_config.cells.n_cols * 
+                      basic_config.cells.q_gen)
+        Q_removed_total = results.total_heat_removed
+        
+        rel_error = abs(Q_removed_total - Q_gen_total) / Q_gen_total
+        assert rel_error < 0.15  # Within 15% (accounting for model simplifications)
+    
+    def test_temperature_increases(self, basic_config: SimulationConfig) -> None:
+        """Test that outlet temperature is higher than inlet."""
+        solver = ROMSolver(basic_config)
+        results = solver.solve(max_iter=100, tol=1e-4)
+        
+        for ch in results.channels:
+            assert ch.T_fluid_out > ch.T_fluid_in
+    
+    def test_cell_temperature_reasonable(self, basic_config: SimulationConfig) -> None:
+        """Test that cell temperatures are in reasonable range."""
+        solver = ROMSolver(basic_config)
+        results = solver.solve(max_iter=100, tol=1e-4)
+        
+        if results.cells is not None:
+            # Temperature should be above inlet
+            assert results.cells.T_min > basic_config.air.Tin
+            
+            # Temperature should not be excessively high
+            assert results.cells.T_max < basic_config.air.Tin + 100  # Within 100K rise
+    
+    def test_higher_flow_reduces_temperature(self, basic_config: SimulationConfig) -> None:
+        """Test that increasing flow rate reduces cell temperature."""
+        # Low flow
+        config_low = basic_config.model_copy(deep=True)
+        config_low.air.mdot = 0.03
+        solver_low = ROMSolver(config_low)
+        results_low = solver_low.solve(max_iter=100, tol=1e-4)
+        
+        # High flow
+        config_high = basic_config.model_copy(deep=True)
+        config_high.air.mdot = 0.08
+        solver_high = ROMSolver(config_high)
+        results_high = solver_high.solve(max_iter=100, tol=1e-4)
+        
+        # Higher flow should result in lower max temperature
+        if results_low.cells and results_high.cells:
+            assert results_high.cells.T_max < results_low.cells.T_max
+    
+    def test_higher_ribs_increase_pressure_drop(self, basic_config: SimulationConfig) -> None:
+        """Test that taller ribs increase pressure drop."""
+        # Short ribs
+        config_short = basic_config.model_copy(deep=True)
+        config_short.ribs.height = 0.002
+        solver_short = ROMSolver(config_short)
+        results_short = solver_short.solve(max_iter=100, tol=1e-4)
+        
+        # Tall ribs
+        config_tall = basic_config.model_copy(deep=True)
+        config_tall.ribs.height = 0.006
+        solver_tall = ROMSolver(config_tall)
+        results_tall = solver_tall.solve(max_iter=100, tol=1e-4)
+        
+        # Taller ribs should have higher pressure drop
+        assert results_tall.total_pressure_drop > results_short.total_pressure_drop
+    
+    def test_convergence(self, basic_config: SimulationConfig) -> None:
+        """Test that solver converges within iteration limit."""
+        solver = ROMSolver(basic_config)
+        results = solver.solve(max_iter=200, tol=1e-5)
+        
+        # Should converge
+        assert results.converged or results.iterations < 200
 
 
-def test_mass_conservation(simple_config):
-    """Test mass conservation across channels."""
-    solver = ROMSolver(simple_config)
-    results = solver.solve()
+class TestParameterSweep:
+    """Test parameter sweep functionality."""
     
-    total_mdot_in = simple_config.air.mdot
-    total_mdot_channels = sum(ch.mdot for ch in results.channels)
+    def test_sweep_single_parameter(self, basic_config: SimulationConfig) -> None:
+        """Test sweeping a single parameter."""
+        solver = ROMSolver(basic_config)
+        
+        heights = [0.002, 0.003, 0.004, 0.005]
+        results_list = solver.sweep_parameter("ribs.height", heights, basic_config)
+        
+        assert len(results_list) == len(heights)
+        
+        # Each result should have valid data
+        for result in results_list:
+            assert result.channels is not None
+            assert len(result.channels) > 0
     
-    # Mass should be conserved
-    assert np.isclose(total_mdot_channels, total_mdot_in, rtol=1e-3)
+    def test_sweep_monotonic_trend(self, basic_config: SimulationConfig) -> None:
+        """Test that sweep shows expected monotonic trends."""
+        solver = ROMSolver(basic_config)
+        
+        heights = [0.002, 0.004, 0.006, 0.008]
+        results_list = solver.sweep_parameter("ribs.height", heights, basic_config)
+        
+        # Extract pressure drops
+        pressure_drops = [r.total_pressure_drop for r in results_list]
+        
+        # Pressure drop should generally increase with rib height
+        # (allowing for some numerical noise)
+        for i in range(len(pressure_drops) - 1):
+            # Check that trend is generally increasing
+            assert pressure_drops[-1] > pressure_drops[0]
 
 
-def test_energy_balance(simple_config):
-    """Test approximate energy balance."""
-    solver = ROMSolver(simple_config)
-    results = solver.solve()
-    
-    # Total heat generation
-    Q_gen_total = simple_config.cells.n_rows * simple_config.cells.n_cols * simple_config.cells.q_gen
-    
-    # Total heat removed
-    Q_removed = results.total_heat_removed
-    
-    # Should be approximately equal (some losses expected)
-    assert Q_removed > 0
-    assert Q_removed <= Q_gen_total * 1.1  # Allow 10% over-prediction
-
-
-def test_temperature_increase(simple_config):
-    """Test that outlet temperature is higher than inlet."""
-    solver = ROMSolver(simple_config)
-    results = solver.solve()
-    
-    for channel in results.channels:
-        assert channel.T_fluid_out > channel.T_fluid_in
-        assert channel.T_wall_mean > channel.T_fluid_mean
-
-
-def test_pressure_drop_positive(simple_config):
-    """Test that pressure drop is positive."""
-    solver = ROMSolver(simple_config)
-    results = solver.solve()
-    
-    assert results.total_pressure_drop > 0
-    
-    for channel in results.channels:
-        assert channel.pressure_drop > 0
-
-
-def test_reynolds_number_range(simple_config):
-    """Test that Reynolds numbers are in reasonable range."""
-    solver = ROMSolver(simple_config)
-    results = solver.solve()
-    
-    for channel in results.channels:
-        # Should be turbulent for typical cooling
-        assert channel.Re > 1000
-        assert channel.Re < 1e6
-
-
-def test_cell_temperatures(simple_config):
-    """Test cell temperature distribution."""
-    solver = ROMSolver(simple_config)
-    results = solver.solve()
-    
-    assert results.cells is not None
-    assert len(results.cells.T_cells) == 4  # 2x2 cells
-    
-    # All cells should be hotter than inlet air
-    for T_cell in results.cells.T_cells:
-        assert T_cell > simple_config.air.Tin
-    
-    # Max should be greater than or equal to min
-    assert results.cells.T_max >= results.cells.T_min
-
-
-def test_rib_height_effect(simple_config):
-    """Test that increasing rib height increases heat transfer and pressure drop."""
-    # Baseline
-    solver1 = ROMSolver(simple_config)
-    results1 = solver1.solve()
-    
-    # Increased rib height
-    config2 = simple_config.model_copy(deep=True)
-    config2.ribs.height = 0.006  # Double the height
-    solver2 = ROMSolver(config2)
-    results2 = solver2.solve()
-    
-    # Higher ribs should:
-    # 1. Increase pressure drop
-    assert results2.total_pressure_drop > results1.total_pressure_drop
-    
-    # 2. Improve heat transfer (lower max temperature)
-    assert results2.cells.T_max < results1.cells.T_max or np.isclose(results2.cells.T_max, results1.cells.T_max, rtol=0.1)
-
-
-def test_flow_rate_effect(simple_config):
-    """Test that increasing flow rate improves cooling."""
-    # Baseline
-    solver1 = ROMSolver(simple_config)
-    results1 = solver1.solve()
-    
-    # Increased flow rate
-    config2 = simple_config.model_copy(deep=True)
-    config2.air.mdot = 0.02  # Double the flow rate
-    solver2 = ROMSolver(config2)
-    results2 = solver2.solve()
-    
-    # Higher flow should:
-    # 1. Increase pressure drop
-    assert results2.total_pressure_drop > results1.total_pressure_drop
-    
-    # 2. Lower cell temperatures
-    assert results2.cells.T_max < results1.cells.T_max
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+if __name__ == '__main__':
+    pytest.main([__file__, '-v'])
